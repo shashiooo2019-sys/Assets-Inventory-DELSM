@@ -1,0 +1,984 @@
+import React, { useState } from "react";
+import { selectBaseClass, selectStyle, optionClass } from "../lib/selectTheme";
+import { Transaction, ShiftRelease, ShiftReleaseException } from "../types";
+import { Search, Download, FileSpreadsheet, Printer, Activity, ClipboardList, RefreshCw, Calendar, Clock, RotateCcw, Trash2, Shield, Share2, ExternalLink, FileText } from "lucide-react";
+import { db } from "../firebase";
+import { deleteDoc, doc, updateDoc } from "firebase/firestore";
+import { DEVICE_TYPE_ORDER } from "../utils/deviceTypeSort";
+import { HOURLY_SHIFTS } from "../utils/shiftConfig";
+
+interface AuditTrailProps {
+  transactions: Transaction[];
+  shiftReleases?: ShiftRelease[];
+  loading: boolean;
+  onRefresh: () => void;
+  role?: "Admin" | "Supervisor";
+}
+
+export default function AuditTrail({ transactions, shiftReleases, loading, onRefresh, role = "Supervisor" }: AuditTrailProps) {
+  const [activeSubTab, setActiveSubTab] = useState<"transactions" | "releases">("releases");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedType, setSelectedType] = useState("All");
+  const [selectedShift, setSelectedShift] = useState("All");
+  const [selectedStatus, setSelectedStatus] = useState("All");
+  
+  // Admin Purge States
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [passcode, setPasscode] = useState("");
+  const [passcodeError, setPasscodeError] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+
+  const resetFilters = () => {
+    setSearchTerm("");
+    setSelectedType("All");
+    setSelectedShift("All");
+    setSelectedStatus("All");
+    setStartDate("");
+    setEndDate("");
+  };
+
+  const filteredTransactions = transactions.filter((tx) => {
+    // Search filter
+    const term = searchTerm.toLowerCase();
+    const matchesSearch =
+      tx.id.toLowerCase().includes(term) ||
+      tx.assetId.toLowerCase().includes(term) ||
+      tx.assetName.toLowerCase().includes(term) ||
+      tx.employeeId.toLowerCase().includes(term) ||
+      tx.agentName.toLowerCase().includes(term);
+
+    // Dropdown filters
+    const matchesType = selectedType === "All" || tx.assetType === selectedType;
+    const matchesShift = selectedShift === "All" || tx.shift === selectedShift;
+    const matchesStatus = selectedStatus === "All" || tx.status === selectedStatus;
+
+    // Date filters
+    let matchesDate = true;
+    if (startDate) {
+      matchesDate = matchesDate && tx.issueDate >= startDate;
+    }
+    if (endDate) {
+      matchesDate = matchesDate && tx.issueDate <= endDate;
+    }
+
+    return matchesSearch && matchesType && matchesShift && matchesStatus && matchesDate;
+  });
+
+  const filteredShiftReleases = (shiftReleases || []).filter((sr) => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch =
+      (sr.id || "").toLowerCase().includes(term) ||
+      (sr.releasedBy || "").toLowerCase().includes(term) ||
+      (sr.releasedById || "").toLowerCase().includes(term) ||
+      (sr.shift || "").toLowerCase().includes(term) ||
+      (sr.type || "").toLowerCase().includes(term) ||
+      (sr.summary || "").toLowerCase().includes(term);
+
+    const matchesShift = selectedShift === "All" || sr.shift === selectedShift;
+
+    return matchesSearch && matchesShift;
+  });
+
+  const handleShareWhatsAppRelease = (sr: ShiftRelease) => {
+    const ts = `${sr.date} ${sr.time}`;
+    let text = "";
+    if (sr.type === "Standard") {
+      text = `✈️ *Lufthansa Operational Handover - Shift Release Success*\n\n` +
+             `📅 *Date/Time:* ${ts}\n` +
+             `🔒 *Status:* Cabinet system and hardware fully aligned. Shift clearance completed!\n\n` +
+             `📋 *Key Handover Metrics:*\n` +
+             `• Release ID: ${sr.id}\n` +
+             `• Shift: ${sr.shift}\n` +
+             `• Verification Hash: ${sr.verificationHash}\n\n` +
+             `👤 *Certified & Authorized by:* ${sr.releasedBy} (ID: ${sr.releasedById})\n` +
+             `🌍 *Location:* DELSM Terminal Charging Locker Station`;
+    } else {
+      const exceptionsText = (sr.exceptions || [])
+        .map(exc => `• 👤 *${exc.holderName}* (ID: ${exc.holderId}): ${exc.deviceCount} Outstanding Device(s)`)
+        .join("\n");
+      text = `✈️ *Lufthansa Handover - EXCEPTIONAL SHIFT RELEASE*\n\n` +
+             `📅 *Date/Time:* ${ts}\n` +
+             `⚠️ *Status:* ALL SHIFT RELEASED EXCEPT:\n` +
+             `${exceptionsText}\n\n` +
+             `📋 *Key Handover Metrics:*\n` +
+             `• Release ID: ${sr.id}\n` +
+             `• Shift: ${sr.shift}\n` +
+             `• Verification Hash: ${sr.verificationHash}\n\n` +
+             `👤 *Authorized Supervisor:* ${sr.releasedBy} (ID: ${sr.releasedById})\n` +
+             `🌍 *Location:* DELSM Terminal Charging Locker Station`;
+    }
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
+  };
+
+  const handlePrintRelease = (sr: ShiftRelease) => {
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) return;
+
+    let exceptionsHtml = "";
+    if (sr.type === "Exceptional" && sr.exceptions && sr.exceptions.length > 0) {
+      const rows = sr.exceptions.map((exc) => `
+        <tr>
+          <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">${exc.holderName}</td>
+          <td style="padding: 6px 10px; border: 1px solid #e2e8f0; font-family: monospace;">${exc.holderId}</td>
+          <td style="padding: 6px 10px; border: 1px solid #e2e8f0; font-weight: bold; text-align: center;">${exc.deviceCount}</td>
+        </tr>
+      `).join("");
+      exceptionsHtml = `
+        <h4 style="margin-top: 25px; color: #b45309; border-bottom: 1px solid #f59e0b; padding-bottom: 4px;">Outstanding Custody Exceptions Tracking</h4>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px;">
+          <thead>
+            <tr style="background-color: #fef3c7;">
+              <th style="padding: 8px 10px; border: 1px solid #e2e8f0; text-align: left;">Holder Name</th>
+              <th style="padding: 8px 10px; border: 1px solid #e2e8f0; text-align: left;">Employee ID</th>
+              <th style="padding: 8px 10px; border: 1px solid #e2e8f0; text-align: center;">Outstanding Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Shift Release Clearance Certificate - ${sr.id}</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 40px; color: #1e293b; line-height: 1.5; }
+            .badge { display: inline-block; padding: 4px 10px; font-size: 10px; font-weight: bold; border-radius: 4px; text-transform: uppercase; }
+            .badge-standard { background-color: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+            .badge-exceptional { background-color: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+            table.meta { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+            table.meta td { padding: 8px 12px; border: 1px solid #e2e8f0; }
+            table.meta td.label { font-weight: bold; background-color: #f8fafc; color: #475569; width: 30%; }
+          </style>
+        </head>
+        <body>
+          <div style="border: 2px solid #0f172a; padding: 30px; border-radius: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: start; border-bottom: 2px solid #0f172a; padding-bottom: 15px;">
+              <div>
+                <h2 style="margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 0.5px; color: #071d49;">Lufthansa operational handover</h2>
+                <h3 style="margin: 5px 0 0 0; font-size: 16px; font-weight: 500; color: #64748b;">Shift Handover & Clearance Certificate</h3>
+              </div>
+              <span class="badge ${sr.type === "Standard" ? "badge-standard" : "badge-exceptional"}">
+                ${sr.type} Release
+              </span>
+            </div>
+            
+            <table class="meta">
+              <tr>
+                <td class="label">Certificate ID</td>
+                <td style="font-family: monospace; font-weight: bold; font-size: 14px;">${sr.id}</td>
+              </tr>
+              <tr>
+                <td class="label">Clearance Date & Time</td>
+                <td>${sr.date} ${sr.time}</td>
+              </tr>
+              <tr>
+                <td class="label">Clearance Shift</td>
+                <td style="font-weight: bold;">${sr.shift}</td>
+              </tr>
+              <tr>
+                <td class="label">Certified By (Supervisor)</td>
+                <td><strong>${sr.releasedBy}</strong> (ID: ${sr.releasedById})</td>
+              </tr>
+              <tr>
+                <td class="label">Verification Code / Hash</td>
+                <td style="font-family: monospace; font-size: 11px; color: #64748b; font-weight: bold;">${sr.verificationHash}</td>
+              </tr>
+              <tr>
+                <td class="label">Locker Location</td>
+                <td>DELSM Terminal Charging Locker Station</td>
+              </tr>
+              <tr>
+                <td class="label">Release Summary</td>
+                <td>${sr.summary}</td>
+              </tr>
+            </table>
+
+            ${exceptionsHtml}
+
+            <div style="margin-top: 40px; border-top: 1px dashed #cbd5e1; padding-top: 20px; font-size: 11px; color: #64748b; text-align: center;">
+              This certificate is auto-generated and legally verified on the digital shift ledger system.
+            </div>
+          </div>
+          <script>window.print();</script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  // Export to Excel / CSV
+  const handleExportCSV = () => {
+    if (filteredTransactions.length === 0) {
+      alert("No data available to export.");
+      return;
+    }
+
+    // Header row
+    const headers = [
+      "Transaction ID",
+      "Asset ID",
+      "Asset Name",
+      "Asset Type",
+      "Employee ID",
+      "Agent Name",
+      "Department",
+      "Issue Date",
+      "Issue Time",
+      "Shift",
+      "Issue Remarks",
+      "Return Date",
+      "Return Time",
+      "Return Remarks",
+      "Status",
+      "Duration (Minutes)"
+    ];
+
+    const rows = filteredTransactions.map((tx) => [
+      tx.id,
+      tx.assetId,
+      `"${tx.assetName.replace(/"/g, '""')}"`,
+      tx.assetType,
+      tx.employeeId,
+      `"${tx.agentName.replace(/"/g, '""')}"`,
+      `"${tx.department.replace(/"/g, '""')}"`,
+      tx.issueDate,
+      tx.issueTime,
+      tx.shift,
+      `"${(tx.issueRemarks || "").replace(/"/g, '""')}"`,
+      tx.returnDate || "",
+      tx.returnTime || "",
+      `"${(tx.returnRemarks || "").replace(/"/g, '""')}"`,
+      tx.status,
+      tx.durationMinutes !== undefined && tx.durationMinutes !== null ? tx.durationMinutes : ""
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
+    
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Asset_Audit_Trail_${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Print Trail
+  const handlePrint = () => {
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) return;
+
+    const rowsHtml = filteredTransactions.map((tx) => `
+      <tr>
+        <td>${tx.id}</td>
+        <td>${tx.assetId}</td>
+        <td>${tx.assetName}</td>
+        <td>${tx.agentName} (${tx.employeeId})</td>
+        <td>${tx.issueDate} ${tx.issueTime}</td>
+        <td>${tx.returnDate ? tx.returnDate + " " + tx.returnTime : "With Agent"}</td>
+        <td>${tx.status}</td>
+        <td>${tx.durationMinutes !== undefined && tx.durationMinutes !== null ? tx.durationMinutes + " min" : "-"}</td>
+      </tr>
+    `).join("");
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Asset Control Audit Trail Report</title>
+          <style>
+            body { font-family: sans-serif; padding: 20px; color: #333; }
+            h2 { border-bottom: 2px solid #5d5dff; padding-bottom: 8px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { bg-color: #f5f5f5; font-weight: bold; }
+          </style>
+        </head>
+        <body>
+          <h2>Asset Issue & Return Audit Report</h2>
+          <p>Generated on: ${new Date().toLocaleString()}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Tx ID</th>
+                <th>Asset ID</th>
+                <th>Asset Name</th>
+                <th>Agent</th>
+                <th>Issued</th>
+                <th>Returned</th>
+                <th>Status</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+          <script>window.print();</script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  // Helper for duration display
+  const formatDuration = (minutes?: number | null) => {
+    if (minutes === undefined || minutes === null) return "Active Session";
+    if (minutes < 60) return `${minutes} min`;
+    const hrs = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hrs}h ${mins}m`;
+  };
+
+  // Dynamic Purge Interval Option: "all", "1day" (upto 1 day old), "2days" (upto 2 days old), "3days" (upto 3 days old)
+  const [purgeOption, setPurgeOption] = useState<"all" | "1day" | "2days" | "3days">("all");
+
+  const getPurgeCutoff = (option: "all" | "1day" | "2days" | "3days") => {
+    if (option === "all") return Date.now();
+    if (option === "1day") return Date.now() - 1 * 24 * 60 * 60 * 1000;
+    if (option === "2days") return Date.now() - 2 * 24 * 60 * 60 * 1000;
+    if (option === "3days") return Date.now() - 3 * 24 * 60 * 60 * 1000;
+    return Date.now();
+  };
+
+  const getPurgeCount = (option: "all" | "1day" | "2days" | "3days") => {
+    if (option === "all") return transactions.length;
+    const tsCutoff = getPurgeCutoff(option);
+    return transactions.filter(t => t.issueTimestamp < tsCutoff).length;
+  };
+
+  const activePurgeCount = getPurgeCount(purgeOption);
+
+  const handleClearTrash = async () => {
+    setIsDeleting(true);
+    setPasscodeError("");
+    
+    const cutoffDate = getPurgeCutoff(purgeOption);
+    const oldTransactions = purgeOption === "all"
+      ? transactions
+      : transactions.filter(t => t.issueTimestamp < cutoffDate);
+    
+    try {
+      let deletedCount = 0;
+      let assetUpdatesCount = 0;
+      
+      for (const tx of oldTransactions) {
+        // Safe check: if this transaction is the active assignment of an asset,
+        // we'll update the asset state to prevent dangling references.
+        if (tx.status !== "Returned") {
+          try {
+            await updateDoc(doc(db, "assets", tx.assetId), {
+              currentAssignmentId: null,
+              status: "In Office"
+            });
+            assetUpdatesCount++;
+          } catch (err) {
+            console.error(`Could not clean active assignment on asset ${tx.assetId}:`, err);
+          }
+        }
+        
+        // Delete the transaction doc
+        await deleteDoc(doc(db, "transactions", tx.id));
+        deletedCount++;
+      }
+      
+      const rangeText = 
+        purgeOption === "all" ? "all transactions" :
+        purgeOption === "1day" ? "transactions older than 1 day" :
+        purgeOption === "2days" ? "transactions older than 2 days" :
+        "transactions older than 3 days";
+
+      alert(`Successfully purged ${deletedCount} historic transaction logs (${rangeText})${assetUpdatesCount > 0 ? ` and resolved ${assetUpdatesCount} active custody bindings.` : ""}`);
+      setShowClearModal(false);
+      setPasscode("");
+      onRefresh(); // Trigger force sync/refresh callback
+    } catch (error) {
+      console.error("Purging transactional databases failed:", error);
+      alert("Error: Insufficient database clearance or internet connection issue.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleVerifyAndClear = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (role === "Admin") {
+      handleClearTrash();
+    } else {
+      if (passcode.trim() === "Admin220!") {
+        handleClearTrash();
+      } else {
+        setPasscodeError("Invalid Administrator passcode credentials.");
+      }
+    }
+  };
+
+  return (
+    <div id="audit-trail-control" className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+            <ClipboardList className="w-5 h-5 text-indigo-500" />
+            Audit Ledger & Activity Logs
+          </h2>
+          <p className="text-slate-500 text-xs mt-1">Immutable transaction ledger capturing all issuances and checkouts.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              setPasscodeError("");
+              setPasscode("");
+              setShowClearModal(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 border border-rose-200 text-rose-705 text-rose-700 bg-rose-50 hover:bg-rose-100 hover:border-rose-350 hover:text-rose-900 font-bold rounded-xl text-xs transition-all cursor-pointer shadow-3xs"
+            title="Clear all transactions and logs older than 2 days"
+          >
+            <Trash2 className="w-4 h-4 text-rose-605 text-rose-600 animate-pulse shrink-0" />
+            <span>Purge History {transactions.length > 0 && `(${transactions.length})`}</span>
+          </button>
+          <button
+            onClick={onRefresh}
+            className="p-2 border border-slate-205 hover:border-indigo-200 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50/10 rounded-xl transition-colors cursor-pointer border border-slate-200"
+            title="Reload Transactions"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+          <button
+            onClick={handleExportCSV}
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            Export CSV
+          </button>
+          <button
+            onClick={handlePrint}
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+          >
+            <Printer className="w-4 h-4 text-slate-500" />
+            Print Report
+          </button>
+        </div>
+      </div>
+
+      {/* Tab Selectors */}
+      <div className="flex border-b border-slate-150 mb-6 bg-slate-50/50 p-1 rounded-2xl gap-1">
+        <button
+          onClick={() => {
+            setActiveSubTab("transactions");
+            resetFilters();
+          }}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+            activeSubTab === "transactions"
+              ? "bg-white text-indigo-650 text-indigo-700 shadow-sm border border-slate-200"
+              : "text-slate-500 hover:text-slate-800 hover:bg-white/50"
+          }`}
+        >
+          <Activity className="w-4 h-4 text-indigo-500" />
+          <span>Device Transactions Ledger</span>
+        </button>
+        <button
+          onClick={() => {
+            setActiveSubTab("releases");
+            resetFilters();
+          }}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+            activeSubTab === "releases"
+              ? "bg-white text-indigo-650 text-indigo-700 shadow-sm border border-slate-200"
+              : "text-slate-500 hover:text-slate-800 hover:bg-white/50"
+          }`}
+        >
+          <FileText className="w-4 h-4 text-indigo-500" />
+          <span>Shift Handover Clearance Logs ({filteredShiftReleases.length})</span>
+        </button>
+      </div>
+
+      {activeSubTab === "transactions" ? (
+        <>
+          {/* Multilevel Search & Filters */}
+          <div className="p-4 bg-slate-50/40 border border-slate-200 rounded-2xl space-y-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-1">
+                <label className="block text-[10px] uppercase font-bold text-slate-450 text-slate-400 mb-1.5 font-sans">Search Fields</label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+                    <Search className="w-4 h-4 text-slate-400" />
+                  </span>
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Agent, Asset ID, Employee ID..."
+                    className="w-full pl-10 pr-3 py-2 text-xs border border-slate-200 bg-white rounded-xl focus:ring-1 focus:ring-indigo-500/50 focus:outline-none transition-all font-medium"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-slate-450 text-slate-400 mb-1.5 font-sans">Device Type</label>
+                <select
+                  value={selectedType}
+                  onChange={(e) => setSelectedType(e.target.value)}
+                  className={`w-full h-10 ${selectBaseClass} text-xs`}
+                  style={selectStyle}
+                >
+                  <option value="All" className={optionClass}>All types</option>
+                  {DEVICE_TYPE_ORDER.map(type => (
+                    <option key={type} value={type} className={optionClass}>{type}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-slate-450 text-slate-400 mb-1.5 font-sans">Shift</label>
+                <select
+                  value={selectedShift}
+                  onChange={(e) => setSelectedShift(e.target.value)}
+                  className={`w-full h-10 ${selectBaseClass} text-xs`}
+                  style={selectStyle}
+                >
+                  <option value="All" className={optionClass}>All shifts</option>
+                  {HOURLY_SHIFTS.map((sh) => (
+                    <option key={sh.value} value={sh.value} className={optionClass}>
+                      {sh.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-slate-200/60">
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-slate-450 text-slate-400 mb-1.5 font-sans">Operational Status</label>
+                <select
+                  value={selectedStatus}
+                  onChange={(e) => setSelectedStatus(e.target.value)}
+                  className={`w-full h-10 ${selectBaseClass} text-xs`}
+                  style={selectStyle}
+                >
+                  <option value="All" className={optionClass}>All states</option>
+                  <option value="Issued" className={optionClass}>Issued</option>
+                  <option value="Returned" className={optionClass}>Returned</option>
+                  <option value="Missing / Not Returned" className={optionClass}>Missing / Not Returned</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-slate-450 text-slate-400 mb-1.5 font-sans">Issue Start Date</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-200 bg-white rounded-xl focus:ring-1 focus:ring-indigo-500/50 focus:outline-none transition-all font-mono font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-slate-450 text-slate-400 mb-1.5 font-sans">Issue End Date</label>
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="flex-1 px-3.5 py-2 text-xs border border-slate-200 bg-white rounded-xl focus:ring-1 focus:ring-indigo-500/50 focus:outline-none transition-all font-mono font-medium"
+                  />
+                  <button
+                    onClick={resetFilters}
+                    className="px-3 py-2 border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 hover:text-slate-800 rounded-xl text-xs flex items-center gap-1 font-semibold transition-all shrink-0 cursor-pointer"
+                    title="Reset Filters"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Audit List Table */}
+          <div className="overflow-x-auto border border-slate-200 rounded-2xl bg-white shadow-xs animate-fadeIn">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-650">
+                  <th className="p-3">Receipt ID</th>
+                  <th className="p-3">Asset</th>
+                  <th className="p-3">Agent Holder</th>
+                  <th className="p-3">Checkout (Issued)</th>
+                  <th className="p-3">Check-In (Returned)</th>
+                  <th className="p-3">Shift</th>
+                  <th className="p-3">Live Status</th>
+                  <th className="p-3 text-right">Duration</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 text-slate-700">
+                {filteredTransactions.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="p-8 text-center text-slate-400 font-sans">
+                      <Activity className="w-8 h-8 text-slate-300 mx-auto mb-2 animate-pulse" />
+                      <p className="font-semibold text-sm text-slate-700">No transaction logs match selection criteria.</p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredTransactions.map((tx) => (
+                    <tr key={tx.id} className="hover:bg-slate-50/30 transition-colors">
+                      <td className="p-3 font-mono font-semibold text-slate-400 text-[10px]">{tx.id}</td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5 rounded uppercase text-[9px]">
+                            {tx.assetId}
+                          </span>
+                          <strong className="text-slate-800 font-bold text-xs">{tx.assetName}</strong>
+                        </div>
+                        <span className="text-[10px] text-slate-500 block mt-1">{tx.assetType}</span>
+                      </td>
+                      <td className="p-3">
+                        <div className="font-semibold text-slate-800 text-[12px]">{tx.agentName}</div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                          {tx.employeeId} · {tx.department}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5 text-slate-600 font-medium font-sans">
+                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="font-mono text-[11px]">{tx.issueDate}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1 text-slate-400 font-mono text-[10px]">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          <span>{tx.issueTime}</span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        {tx.returnDate ? (
+                          <>
+                            <div className="flex items-center gap-1.5 text-slate-600 font-medium font-sans">
+                              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                              <span className="font-mono text-[11px]">{tx.returnDate}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 mt-1 text-slate-400 font-mono text-[10px]">
+                              <Clock className="w-3 h-3 text-slate-400" />
+                              <span>{tx.returnTime}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <span className="inline-block px-1.5 py-0.5 text-[10px] font-bold text-amber-705 text-amber-700 bg-amber-50/50 rounded border border-amber-100">With Agent</span>
+                        )}
+                      </td>
+                      <td className="p-3 text-[11px] font-bold text-slate-550 text-slate-500 uppercase">{tx.shift}</td>
+                      <td className="p-3">
+                        <span
+                          className={`px-2 py-0.5 font-bold rounded-lg text-[9px] ${
+                            tx.status === "Returned"
+                              ? "bg-teal-50 text-teal-700 border border-teal-150"
+                              : tx.status === "Issued"
+                              ? "bg-indigo-50 text-indigo-700 border border-indigo-150 animate-pulse"
+                              : "bg-rose-50 text-rose-700 border border-rose-150"
+                          }`}
+                        >
+                          {tx.status}
+                        </span>
+                        {(tx.issueRemarks !== "None specified" || tx.returnRemarks) && (
+                          <div className="text-[10px] text-slate-500 italic mt-1.5 max-w-xs break-all">
+                            {tx.returnRemarks ? `Return note: ${tx.returnRemarks}` : `Issue note: ${tx.issueRemarks}`}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3 font-mono text-right text-slate-800 font-bold">
+                        {formatDuration(tx.durationMinutes)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Shift Releases Search & Filters */}
+          <div className="p-4 bg-slate-50/40 border border-slate-200 rounded-2xl gap-4 mb-6 grid grid-cols-1 md:grid-cols-2 animate-fadeIn">
+            <div>
+              <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 font-sans">Search Releases</label>
+              <div className="relative">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+                  <Search className="w-4 h-4 text-slate-400" />
+                </span>
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Supervisor, ID, Certificate ID, summary text..."
+                  className="w-full pl-10 pr-3 py-2 text-xs border border-slate-200 bg-white rounded-xl focus:ring-1 focus:ring-indigo-500/50 focus:outline-none transition-all font-medium font-sans"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 font-sans font-semibold">Shift Select</label>
+              <select
+                value={selectedShift}
+                onChange={(e) => setSelectedShift(e.target.value)}
+                className={`w-full h-10 ${selectBaseClass} text-xs`}
+                style={selectStyle}
+              >
+                <option value="All" className={optionClass}>All shifts</option>
+                {HOURLY_SHIFTS.map((sh) => (
+                  <option key={sh.value} value={sh.value} className={optionClass}>
+                    {sh.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Shift Releases table */}
+          <div className="overflow-x-auto border border-slate-200 rounded-2xl bg-white shadow-xs animate-fadeIn">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-650">
+                  <th className="p-4">Certificate ID</th>
+                  <th className="p-4">Clearance Date & Time</th>
+                  <th className="p-4">Certified By</th>
+                  <th className="p-4">Release Type</th>
+                  <th className="p-4">Verification Code</th>
+                  <th className="p-4">Summary / Exceptions Tracker</th>
+                  <th className="p-4 text-right">Certificate Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 text-slate-700">
+                {filteredShiftReleases.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-slate-450 font-sans">
+                      <FileText className="w-8 h-8 text-slate-300 mx-auto mb-2 animate-pulse" />
+                      <p className="font-semibold text-xs text-slate-500">No shift clearance release certificates met selection filters.</p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredShiftReleases.map((sr) => (
+                    <tr key={sr.id} className="hover:bg-slate-50/20 transition-colors">
+                      <td className="p-4 font-mono font-extrabold text-[#071d49] text-[11px] select-all">{sr.id}</td>
+                      <td className="p-4">
+                        <div className="flex items-center gap-1.5 text-slate-650 font-semibold font-sans">
+                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="font-mono text-[11px]">{sr.date}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1 text-slate-400 font-mono text-[10px]">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          <span>{sr.time}</span>
+                        </div>
+                      </td>
+                      <td className="p-4">
+                        <div className="font-bold text-slate-900 text-[12px]">{sr.releasedBy}</div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                          Employee ID: {sr.releasedById}
+                        </div>
+                      </td>
+                      <td className="p-4">
+                        <span
+                          className={`px-2 py-0.5 font-bold rounded-lg text-[9px] uppercase tracking-wide border ${
+                            sr.type === "Standard"
+                              ? "bg-teal-50 text-teal-700 border-teal-200"
+                              : "bg-amber-50 text-amber-700 border-amber-200 animate-pulse"
+                          }`}
+                        >
+                          {sr.type}
+                        </span>
+                        <span className="text-[10.5px] text-slate-500 font-semibold block mt-1 tracking-wider font-mono uppercase">{sr.shift} Shift</span>
+                      </td>
+                      <td className="p-4">
+                        <span className="font-mono text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 px-2 py-1 rounded cursor-help font-bold tracking-tight block max-w-[130px] truncate select-all" title={sr.verificationHash}>
+                          {sr.verificationHash}
+                        </span>
+                      </td>
+                      <td className="p-4 max-w-sm">
+                        <p className="font-medium text-slate-700 text-[11px] leading-relaxed">{sr.summary}</p>
+                        {sr.exceptions && sr.exceptions.length > 0 && (
+                          <div className="mt-2.5 bg-slate-50/60 border border-slate-150 rounded-xl p-2.5 space-y-1.5">
+                            <span className="text-[9px] uppercase font-bold text-slate-500 block tracking-wide">Exceptions Handover Tracker:</span>
+                            {sr.exceptions.map((exc, i) => (
+                              <div key={i} className="text-[10px] flex justify-between text-slate-650 bg-white p-1 rounded-lg border border-slate-150 font-mono shadow-3xs">
+                                <span>👤 {exc.holderName} ({exc.holderId})</span>
+                                <span className="font-bold bg-amber-50 text-amber-800 px-1.5 rounded-md border border-amber-200 shrink-0">{exc.deviceCount} Dev</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleShareWhatsAppRelease(sr)}
+                            className="flex items-center gap-1.5 py-1.5 px-3 bg-[#25D366] hover:bg-[#20BA56] border border-[#20BA56]/20 hover:border-[#20BA56]/40 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer shadow-3xs"
+                            title="Share Clearance Log on WhatsApp"
+                          >
+                            <Share2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>Share</span>
+                          </button>
+                          <button
+                            onClick={() => handlePrintRelease(sr)}
+                            className="flex items-center gap-1.5 py-1.5 px-3 bg-white hover:bg-slate-50 border border-slate-250 hover:border-slate-350 text-slate-700 hover:text-slate-900 font-extrabold rounded-xl text-xs transition-colors cursor-pointer shadow-3xs"
+                            title="Print Hardcopy Certificate Proof"
+                          >
+                            <Printer className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                            <span>Print</span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {showClearModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-2xl max-w-lg w-full text-center space-y-6">
+            <div className="space-y-2">
+              <div className="flex justify-center mb-1">
+                <div className="p-3 bg-rose-50 border border-rose-100 rounded-2xl text-rose-700 shadow-sm animate-bounce">
+                  <Shield className="w-8 h-8 text-rose-600" />
+                </div>
+              </div>
+              <h2 className="text-xl font-extrabold text-slate-900 font-sans tracking-tight">
+                {role === "Admin" ? "Confirm Secure Purge" : "Admin Credentials Required"}
+              </h2>
+              <p className="text-xs text-slate-500 leading-relaxed font-semibold font-sans">
+                {role === "Admin" ? (
+                  `Select any purge option below to permanently clear specific transactional logs and device history records.`
+                ) : (
+                  `Purging historic logs is strictly restricted to Administrator capabilities. Select your option and enter the live terminal passcode to authorize:`
+                )}
+              </p>
+            </div>
+
+            {/* Purge Options Selector */}
+            <div className="space-y-2 text-left">
+              <span className="block text-[10px] uppercase font-bold text-slate-500 tracking-wider font-sans">
+                Select Purge History Range:
+              </span>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setPurgeOption("all")}
+                  className={`p-3 rounded-2xl border text-xs font-bold transition-all flex flex-col items-start gap-1 cursor-pointer select-none text-left w-full ${
+                    purgeOption === "all"
+                      ? "bg-rose-50/70 border-rose-500 text-[#071d49] ring-2 ring-rose-500/20"
+                      : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="text-sm">🔥</span>
+                  <span className="font-extrabold block">All History</span>
+                  <span className="text-[10px] font-mono text-slate-500">Purges {getPurgeCount("all")} items</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPurgeOption("1day")}
+                  className={`p-3 rounded-2xl border text-xs font-bold transition-all flex flex-col items-start gap-1 cursor-pointer select-none text-left w-full ${
+                    purgeOption === "1day"
+                      ? "bg-rose-50/70 border-rose-500 text-[#071d49] ring-2 ring-rose-500/20"
+                      : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="text-sm">⏱️</span>
+                  <span className="font-extrabold block">Upto 1 Day Ago</span>
+                  <span className="text-[10px] font-mono text-slate-500">Purges {getPurgeCount("1day")} items</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPurgeOption("2days")}
+                  className={`p-3 rounded-2xl border text-xs font-bold transition-all flex flex-col items-start gap-1 cursor-pointer select-none text-left w-full ${
+                    purgeOption === "2days"
+                      ? "bg-rose-50/70 border-rose-500 text-[#071d49] ring-2 ring-rose-500/20"
+                      : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="text-sm">⏱️</span>
+                  <span className="font-extrabold block">Upto 2 Days Ago</span>
+                  <span className="text-[10px] font-mono text-slate-500">Purges {getPurgeCount("2days")} items</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPurgeOption("3days")}
+                  className={`p-3 rounded-2xl border text-xs font-bold transition-all flex flex-col items-start gap-1 cursor-pointer select-none text-left w-full ${
+                    purgeOption === "3days"
+                      ? "bg-rose-50/70 border-rose-500 text-[#071d49] ring-2 ring-rose-500/20"
+                      : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="text-sm">⏱️</span>
+                  <span className="font-extrabold block">Max 3 Days Old</span>
+                  <span className="text-[10px] font-mono text-slate-500">Purges {getPurgeCount("3days")} items</span>
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleVerifyAndClear} className="space-y-4 text-left font-sans animate-fadeIn">
+              {role !== "Admin" && (
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1.5 tracking-wider font-sans">
+                    Admin Terminal Passcode
+                  </label>
+                  <input
+                    type="password"
+                    value={passcode}
+                    onChange={(e) => setPasscode(e.target.value)}
+                    placeholder="••••••••••••"
+                    required
+                    className="w-full h-12 px-4 bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 rounded-xl text-sm font-semibold tracking-wide transition-all text-center font-mono"
+                    autoFocus
+                  />
+                </div>
+              )}
+
+              {passcodeError && (
+                <div className="text-xs text-rose-600 font-extrabold bg-rose-50 border border-rose-100 px-3 py-2.5 rounded-xl text-center leading-relaxed font-sans animate-fadeIn">
+                  ⚠️ {passcodeError}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowClearModal(false)}
+                  disabled={isDeleting}
+                  className="flex-1 h-11 text-slate-705 text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 font-extrabold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all active:scale-[0.98] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isDeleting || activePurgeCount === 0}
+                  className="flex-1 h-11 bg-rose-605 hover:bg-rose-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl shadow-md cursor-pointer transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  {isDeleting ? (
+                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isDeleting ? "Purging..." : "Confirm Purge"}</span>
+                </button>
+              </div>
+              
+              {activePurgeCount === 0 && (
+                <p className="text-[10px] text-center text-amber-706 text-amber-700 font-bold bg-amber-50 rounded-lg p-2 border border-amber-200 animate-fadeIn">
+                  Notice: No legacy transactions matching this option exist in the database.
+                </p>
+              )}
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
