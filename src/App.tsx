@@ -586,23 +586,7 @@ export default function App() {
               </a>
             </div>
 
-            {/* Lock Console Session Button */}
-            {(isAuthenticatedSupervisor || isAuthenticatedAdmin) && (
-              <button
-                onClick={() => {
-                  setIsAuthenticatedSupervisor(false);
-                  setIsAuthenticatedAdmin(false);
-                  sessionStorage.removeItem("auth_supervisor");
-                  sessionStorage.removeItem("auth_admin");
-                  setPasswordInput("");
-                  setPasswordError("");
-                }}
-                className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-slate-200 hover:border-rose-200 bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-700 text-[11px] font-bold rounded-xl shadow-3xs transition-all cursor-pointer"
-              >
-                <Shield className="w-3.5 h-3.5 text-slate-400" />
-                Lock Console Session
-              </button>
-            )}
+
 
             {/* Database verification badges */}
             <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 text-[10px] text-slate-500 space-y-2">
@@ -631,10 +615,10 @@ export default function App() {
                   )}
 
                   <button
-                    onClick={() => handleDatabaseSeed(false)}
+                    onClick={testConnection}
                     disabled={dbSeeding}
                     className="px-1.5 py-0.5 rounded bg-white hover:bg-indigo-50 border border-slate-200 text-slate-600 hover:text-indigo-600 font-bold cursor-pointer disabled:opacity-55 transition-colors"
-                    title="Test connection and check if seeding is needed"
+                    title="Test connection"
                   >
                     Test / Connect
                   </button>
@@ -648,22 +632,6 @@ export default function App() {
                 {dbStatusMessage && (
                   <div className="p-1.5 bg-slate-100 rounded text-[9.5px] font-mono text-slate-600 break-words leading-tight">
                     {dbStatusMessage}
-                  </div>
-                )}
-
-                {/* If database is empty or connection issues occur, show a prominent Seeding action */}
-                {(assets.length === 0 || dbVerified === false) && (
-                  <div className="pt-1.5 border-t border-slate-200/60 space-y-1.5">
-                    <p className="text-[9.5px] text-amber-600 leading-normal font-sans">
-                      ⚠️ Data is missing or connection was blocked by old security rules.
-                    </p>
-                    <button
-                      onClick={() => handleDatabaseSeed(true)}
-                      disabled={dbSeeding}
-                      className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white font-bold text-[9.5px] uppercase tracking-wider rounded shadow-3xs cursor-pointer transition-all active:scale-[0.98]"
-                    >
-                      {dbSeeding ? "Seeding Database..." : "Seed / Restore Sample Data"}
-                    </button>
                   </div>
                 )}
               </div>
