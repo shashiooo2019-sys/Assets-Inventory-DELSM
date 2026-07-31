@@ -166,10 +166,9 @@ const INITIAL_TRANSACTIONS = [
 
 export async function bootstrapDatabaseIfEmpty(force: boolean = false) {
   try {
-    // Always check/seed customizable device types independently
+    // Only check and set base device types if missing
     const typesSnap = await getDocs(deviceTypesCol);
-    if (typesSnap.empty || force) {
-      console.log("Seeding default device types dynamically...");
+    if (typesSnap.empty) {
       const DEFAULT_TYPES = [
         { id: "ipad", name: "iPad" },
         { id: "ingenico-pos", name: "Ingenico POS" },
@@ -180,33 +179,10 @@ export async function bootstrapDatabaseIfEmpty(force: boolean = false) {
         await setDoc(doc(deviceTypesCol, t.id), t);
       }
     }
-
-    const assetsSnap = await getDocs(assetsCol);
-    if (!assetsSnap.empty && !force) {
-      console.log("Database already seeded with assets.");
-      return;
-    }
-
-    console.log("Seeding database with initial assets, agents and history...");
-
-    // Seed Assets
-    for (const asset of INITIAL_ASSETS) {
-      await setDoc(doc(assetsCol, asset.id), asset);
-    }
-
-    // Seed Agents
-    for (const agent of INITIAL_AGENTS) {
-      await setDoc(doc(agentsCol, agent.id), agent);
-    }
-
-    // Seed Transactions
-    for (const tx of INITIAL_TRANSACTIONS) {
-      await setDoc(doc(transactionsCol, tx.id), tx);
-    }
-
-    console.log("Database seeded successfully!");
+    // Do not seed any mock or sample assets, agents, or transactions.
+    console.log("Database initialized in clean state for user data.");
   } catch (err) {
-    console.error("Error seeding database:", err);
-    throw err; // rethrow so calling components can catch & display
+    console.error("Error initializing database:", err);
+    throw err;
   }
 }

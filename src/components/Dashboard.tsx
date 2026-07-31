@@ -70,6 +70,55 @@ export default function Dashboard({ assets, agents, transactions, loading, onRef
       `🌍 *Location:* DELSM Terminal Charging Locker Station`;
   };
 
+  const buildWhatsAppDeviceClassSummaryMessage = () => {
+    const ts = new Date().toLocaleString("en-GB", { hour12: false });
+    const types = sortDeviceTypes(Array.from(new Set(assets.map((a) => a.type || "Other"))));
+    
+    let breakdownText = "";
+    types.forEach((type) => {
+      const ofType = assets.filter((a) => (a.type || "Other") === type);
+      const total = ofType.length;
+      const issued = ofType.filter((a) => a.status === AssetStatus.ISSUED).length;
+      const inOffice = ofType.filter((a) => a.status === AssetStatus.IN_OFFICE).length;
+      const missing = ofType.filter((a) => a.status === AssetStatus.MISSING).length;
+      const notTaken = ofType.filter((a) => a.status === AssetStatus.NOT_TAKEN).length;
+      
+      breakdownText += `• *${type}s:* Total ${total} | Issued ${issued} | In Locker ${inOffice}`;
+      if (missing > 0 || notTaken > 0) {
+        const extra = [];
+        if (missing > 0) extra.push(`Missing: ${missing}`);
+        if (notTaken > 0) extra.push(`Not Taken: ${notTaken}`);
+        breakdownText += ` (${extra.join(", ")})`;
+      }
+      breakdownText += `\n`;
+    });
+
+    return `📊 *Dynamic Inventory Summary by Device Class*\n` +
+      `📅 *Date/Time:* ${ts}\n\n` +
+      `${breakdownText}\n` +
+      `📦 *Total Fleet Size:* ${assets.length} Devices\n` +
+      `🌍 *Location:* DELSM Terminal Charging Locker Station`;
+  };
+
+  const buildWhatsAppSingleClassSummaryMessage = (type: string) => {
+    const ts = new Date().toLocaleString("en-GB", { hour12: false });
+    const ofType = assets.filter((a) => (a.type || "Other") === type);
+    const total = ofType.length;
+    const issued = ofType.filter((a) => a.status === AssetStatus.ISSUED).length;
+    const inOffice = ofType.filter((a) => a.status === AssetStatus.IN_OFFICE).length;
+    const missing = ofType.filter((a) => a.status === AssetStatus.MISSING).length;
+    const notTaken = ofType.filter((a) => a.status === AssetStatus.NOT_TAKEN).length;
+
+    return `📱 *Inventory Summary - ${type}s*\n` +
+      `📅 *Date/Time:* ${ts}\n\n` +
+      `• Total Fleet: ${total}\n` +
+      `• Issued / With Agent: ${issued}\n` +
+      `• In Office / Locker: ${inOffice}\n` +
+      (missing > 0 ? `• ⚠️ Missing: ${missing}\n` : '') +
+      (notTaken > 0 ? `• ⏳ Not Taken: ${notTaken}\n` : '') +
+      `\n🌍 *Location:* DELSM Terminal Charging Locker Station`;
+  };
+
   const saveShiftRelease = async (type: "Standard" | "Exceptional", customSupervisor?: string, customSupervisorId?: string, customExceptions?: Array<{holderName: string, holderId: string, deviceCount: number}>) => {
     try {
       const releaseId = `SR-${Date.now()}`;
@@ -725,7 +774,7 @@ export default function Dashboard({ assets, agents, transactions, loading, onRef
 
       {/* Dynamic Summary Breakdown by Asset Type */}
       <div id="dashboard-asset-type-breakdown" className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
-        <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4 pb-2 border-b border-slate-100">
           <div>
             <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-2">
               <Layers className="w-4 h-4 text-indigo-500" />
@@ -733,10 +782,21 @@ export default function Dashboard({ assets, agents, transactions, loading, onRef
             </h3>
             <p className="text-[10px] text-slate-400 mt-0.5">Real-time status metrics segregated by physical asset category</p>
           </div>
+          <a
+            href={`https://api.whatsapp.com/send?text=${encodeURIComponent(buildWhatsAppDeviceClassSummaryMessage())}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#25D366] hover:bg-[#20BA56] hover:text-white text-white text-[11px] font-bold rounded-xl shadow-2xs transition-all no-underline cursor-pointer"
+            title="Share Dynamic Inventory Summary on WhatsApp"
+            id="share-whatsapp-device-class-summary"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>Share via WhatsApp</span>
+          </a>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {Array.from(new Set(assets.map((a) => a.type || "Other"))).sort().map((type) => {
+          {sortDeviceTypes(Array.from(new Set(assets.map((a) => a.type || "Other")))).map((type) => {
             const ofType = assets.filter((a) => (a.type || "Other") === type);
             const total = ofType.length;
             const issued = ofType.filter((a) => a.status === AssetStatus.ISSUED).length;
@@ -746,11 +806,23 @@ export default function Dashboard({ assets, agents, transactions, loading, onRef
 
             return (
               <div key={type} className="bg-slate-50/50 border border-slate-200/60 hover:border-slate-300 rounded-xl p-4 transition-all" id={`class-summary-${type.toLowerCase().replace(/\s+/g, '-')}`}>
-                <div className="flex items-center gap-2.5 mb-3">
-                  <div className="p-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg">
-                    {getDeviceIcon(type)}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg">
+                      {getDeviceIcon(type)}
+                    </div>
+                    <span className="font-bold text-xs text-slate-800 uppercase tracking-tight">{type}s</span>
                   </div>
-                  <span className="font-bold text-xs text-slate-800 uppercase tracking-tight">{type}s</span>
+                  <a
+                    href={`https://api.whatsapp.com/send?text=${encodeURIComponent(buildWhatsAppSingleClassSummaryMessage(type))}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-1.5 bg-emerald-50 hover:bg-[#25D366] text-emerald-600 hover:text-white rounded-lg transition-colors border border-emerald-200 shadow-3xs flex items-center justify-center cursor-pointer no-underline"
+                    title={`Share ${type} summary on WhatsApp`}
+                    id={`share-whatsapp-${type.toLowerCase().replace(/\s+/g, '-')}`}
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                  </a>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 text-center">
