@@ -430,9 +430,9 @@ export default function App() {
         </main>
       ) : (
         /* Main dashboard body */
-        <div className="flex-1 flex flex-col md:flex-row">
+        <div className="flex-1 flex flex-row min-h-0">
           {/* Left Drawer / Nav Rails */}
-        <aside className={`bg-white border-b md:border-b-0 md:border-r border-slate-200 text-slate-600 py-5 transition-all duration-300 shrink-0 flex flex-col justify-between ${isMenuOpen ? "w-full md:w-64 px-4" : "w-full md:w-16 px-2 items-center"}`}>
+        <aside className={`bg-white border-r border-slate-200 text-slate-600 py-5 transition-all duration-300 shrink-0 flex flex-col justify-between ${isMenuOpen ? "w-64 px-4" : "w-16 px-2 items-center"}`}>
           <nav className="w-full space-y-3">
             {/* Sidebar Top Header & Toggle Button */}
             <div className={`flex items-center ${isMenuOpen ? "justify-between px-1 mb-2" : "justify-center mb-1"}`}>
